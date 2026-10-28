@@ -322,6 +322,62 @@
 
   <!-- Custom JavaScript for this theme -->
   <script src="js/scrolling-nav.js"></script>
+	   <!-- Firebase v10 Modular SDK -->
+ <!-- Firebase SDK & Newsletter Submission -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js";
+    import { getFirestore, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCyy-B5HjH-LPGut1TCyVDFWjFMlT6XqMw",
+      authDomain: "garbagepathv2.firebaseapp.com",
+      projectId: "garbagepathv2",
+      storageBucket: "garbagepathv2.firebasestorage.app",
+      messagingSenderId: "505856089619",
+      appId: "1:505856089619:web:02c6ba79801c3a99e4a9e6",
+      measurementId: "G-N516M1XG5B"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    const form = document.getElementById("newsletterForm");
+    const emailInput = document.getElementById("subscriberEmail");
+    const submitBtn = document.getElementById("submitBtn");
+    const msgBox = document.getElementById("newsletterMsg");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = emailInput.value.trim().toLowerCase();
+
+      if (!email) return;
+
+      submitBtn.disabled = true;
+      submitBtn.innerText = "SUBMITTING...";
+
+      try {
+        await addDoc(collection(db, "skateorsplit"), {
+          email: email,
+          createdAt: serverTimestamp(),
+          source: window.location.pathname.includes("fingerboards") ? "fingerboards_page" : 
+                  window.location.pathname.includes("shop") ? "shop_page" : "home_page"
+        });
+
+        msgBox.style.display = "block";
+        msgBox.style.color = "#28a745";
+        msgBox.innerText = "You're in! Welcome to the SKATE or SPLIT Army.";
+        emailInput.value = "";
+      } catch (err) {
+        console.error("Firestore submission error:", err);
+        msgBox.style.display = "block";
+        msgBox.style.color = "#dc3545";
+        msgBox.innerText = "Something went wrong. Please try again.";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerText = "SUBSCRIBE";
+      }
+    });
+  </script>
 
 </body>
 
