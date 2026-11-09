@@ -1,7 +1,6 @@
 (function () {
   const STORAGE_KEY = "sos_cart_v1";
   const CHECKOUT_FUNCTION_URL = "https://us-central1-garbagepathv2.cloudfunctions.net/createStripeCheckout";
-  const FLAT_SHIPPING_PRICE = 6.00;
 
   let cart = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
 
@@ -9,6 +8,30 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cart));
     renderCartUI();
     syncProductButtons();
+  }
+
+  // Smart combined shipping calculation matching the backend function
+  function calculateShipping(cartItems) {
+    let shirtCount = 0;
+    let boardCount = 0;
+
+    cartItems.forEach(function (item) {
+      if (item.isUnique) {
+        boardCount += item.quantity;
+      } else {
+        shirtCount += item.quantity;
+      }
+    });
+
+    if (shirtCount === 0 && boardCount === 0) return 0;
+
+    // Fingerboards only: $2.50 base + $0.50 per additional board
+    if (shirtCount === 0) {
+      return 2.50 + Math.max(0, boardCount - 1) * 0.50;
+    }
+
+    // T-Shirts present: $5.00 base + $1.50 per additional shirt (boards ride free)
+    return 5.00 + Math.max(0, shirtCount - 1) * 1.50;
   }
 
   function injectCartDOM() {
@@ -54,8 +77,8 @@
             '<span id="sosCartSubtotal">$0.00</span>' +
           '</div>' +
           '<div style="display:flex; justify-content:space-between; margin-bottom:14px; color:#aaa; font-size:0.9em;">' +
-            '<span>Combined Flat Shipping</span>' +
-            '<span id="sosCartShipping">$' + FLAT_SHIPPING_PRICE.toFixed(2) + '</span>' +
+            '<span>Combined Shipping</span>' +
+            '<span id="sosCartShipping">$0.00</span>' +
           '</div>' +
           '<div style="font-size:0.78em; color:#888; margin-bottom:14px; line-height:1.4;">' +
             '<strong>ALL SALES FINAL:</strong> No returns, refunds, or exchanges on limited DIY runs.' +
@@ -107,14 +130,11 @@
       const imgEl = card.querySelector("img");
 
       const baseTitle = titleEl ? titleEl.textContent.trim() : "SoS Item #" + (index + 1);
-      let sizeText = "";
       let price = 20.0;
 
       paragraphs.forEach(function (p) {
         const txt = p.textContent.trim();
-        if (txt.toLowerCase().startsWith("size:")) {
-          sizeText = txt.replace(/size:/i, "").trim();
-        } else if (txt.includes("$")) {
+        if (txt.includes("$")) {
           const parsed = parseFloat(txt.replace(/[^0-9.]/g, ""));
           if (!isNaN(parsed)) price = parsed;
         }
@@ -123,6 +143,7 @@
       const imgSrc = imgEl ? new URL(imgEl.getAttribute("src"), window.location.href).href : "";
 
       let sizeSelect = null;
+      // Only apparel (shop.html) gets M, L, XL size dropdowns. Fingerboards have no size options.
       if (!isFingerboardPage) {
         sizeSelect = document.createElement("select");
         sizeSelect.className = "sos-size-select";
@@ -143,7 +164,7 @@
 
       btn.addEventListener("click", function (e) {
         e.preventDefault();
-        const selectedSize = isFingerboardPage ? sizeText : sizeSelect.value;
+        const selectedSize = isFingerboardPage ? "" : sizeSelect.value;
         const itemId = isFingerboardPage
           ? btn.dataset.baseId
           : btn.dataset.baseId + "-" + selectedSize;
@@ -203,6 +224,7 @@
     const countEl = document.getElementById("sosCartCount");
     const listEl = document.getElementById("sosCartItems");
     const subtotalEl = document.getElementById("sosCartSubtotal");
+    const shippingEl = document.getElementById("sosCartShipping");
     const checkoutBtn = document.getElementById("sosCheckoutBtn");
 
     if (!listEl) return;
@@ -214,18 +236,19 @@
 
     if (cart.length === 0) {
       listEl.innerHTML = '<p class="text-muted text-center" style="margin-top:40px;">Your bag is empty.</p>';
-      subtotalEl.textContent = "$0.00";
-      checkoutBtn.disabled = true;
+      if (subtotalEl) subtotalEl.textContent = "$0.00";
+      if (shippingEl) shippingEl.textContent = "$0.00";
+      if (checkoutBtn) checkoutBtn.disabled = true;
       return;
     }
 
-    checkoutBtn.disabled = false;
+    if (checkoutBtn) checkoutBtn.disabled = false;
     let subtotal = 0;
 
     listEl.innerHTML = cart.map(function (item, idx) {
       const lineTotal = item.price * item.quantity;
       subtotal += lineTotal;
-      const subLabel = item.size ? "Size: " + item.size : "Custom 5-Ply";
+      const subLabel = item.size ? "Size: " + item.size : "Custom 5-Ply Deck";
       const qtyControls = item.isUnique
         ? '<span style="color:#888; font-size:0.85em;">1-of-1 Deck</span>'
         : '<div style="display:inline-flex; align-items:center; gap:8px; margin-top:4px;">' +
@@ -249,7 +272,8 @@
       );
     }).join("");
 
-    subtotalEl.textContent = "$" + subtotal.toFixed(2);
+    if (subtotalEl) subtotalEl.textContent = "$" + subtotal.toFixed(2);
+    if (shippingEl) shippingEl.textContent = "$" + calculateShipping(cart).toFixed(2);
   }
 
   window.__sosUpdateQty = function (idx, delta) {
