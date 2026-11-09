@@ -115,7 +115,93 @@
     }
   }
 
-  function wireProductCards() {
+function wireProductCards() {
+    // Check URL or automatically detect if this page has size dropdowns (apparel vs fingerboards)
+    const urlPath = window.location.pathname.toLowerCase();
+    const isFingerboardPage = urlPath.includes("fingerboard") || urlPath.includes("testpage") || !urlPath.includes("shop");
+    const buyButtons = document.querySelectorAll("#products a.btn-danger");
+
+    buyButtons.forEach(function (btn, index) {
+      if (btn.textContent.trim().toUpperCase() !== "BUY NOW") return;
+
+      const card = btn.closest(".col-lg-4, .col-lg-3, .col-md-6");
+      if (!card) return;
+
+      const titleEl = card.querySelector("h4");
+      const paragraphs = Array.from(card.querySelectorAll("p"));
+      const imgEl = card.querySelector("img");
+
+      const baseTitle = titleEl ? titleEl.textContent.trim() : "SoS Item #" + (index + 1);
+      let price = 20.0;
+
+      paragraphs.forEach(function (p) {
+        const txt = p.textContent.trim();
+        if (txt.includes("$")) {
+          const parsed = parseFloat(txt.replace(/[^0-9.]/g, ""));
+          if (!isNaN(parsed)) price = parsed;
+        }
+      });
+
+      const imgSrc = imgEl ? new URL(imgEl.getAttribute("src"), window.location.href).href : "";
+
+      let sizeSelect = null;
+      // Only inject size dropdowns if we are explicitly on shop.html (apparel)
+      if (urlPath.includes("shop.html") || urlPath.endsWith("/shop")) {
+        sizeSelect = document.createElement("select");
+        sizeSelect.className = "sos-size-select";
+        ["M", "L", "XL"].forEach(function (sz) {
+          const opt = document.createElement("option");
+          opt.value = sz;
+          opt.textContent = "Size: " + sz;
+          if (sz === "L") opt.selected = true;
+          sizeSelect.appendChild(opt);
+        });
+        btn.parentNode.insertBefore(sizeSelect, btn);
+      }
+
+      btn.removeAttribute("href");
+      btn.style.cursor = "pointer";
+      btn.dataset.baseId = baseTitle.replace(/\s+/g, "-").toLowerCase();
+      // If no size select was created, it's a 1-of-1 fingerboard
+      btn.dataset.isUnique = (!sizeSelect).toString();
+
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        const selectedSize = sizeSelect ? sizeSelect.value : "";
+        const itemId = sizeSelect
+          ? btn.dataset.baseId + "-" + selectedSize
+          : btn.dataset.baseId;
+
+        const existing = cart.find(function (item) {
+          return item.id === itemId;
+        });
+
+        if (!sizeSelect && existing) {
+          toggleCart(true);
+          return;
+        }
+
+        if (existing) {
+          existing.quantity += 1;
+        } else {
+          cart.push({
+            id: itemId,
+            name: baseTitle,
+            size: selectedSize,
+            price: price,
+            quantity: 1,
+            isUnique: !sizeSelect,
+            image: imgSrc
+          });
+        }
+
+        saveCart();
+        toggleCart(true);
+      });
+    });
+
+    syncProductButtons();
+  }  function wireProductCards() {
     const isFingerboardPage = window.location.pathname.toLowerCase().includes("fingerboard");
     const buyButtons = document.querySelectorAll("#products a.btn-danger");
 
