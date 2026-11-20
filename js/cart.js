@@ -1,8 +1,16 @@
 (function () {
   const STORAGE_KEY = "sos_cart_v1";
-  const CHECKOUT_FUNCTION_URL = "https://us-central1-garbagepathv2.cloudfunctions.net/createStripeCheckout";
+  const PROJECT_ID = "garbagepathv2";
+  const CHECKOUT_FUNCTION_URL =
+    "https://us-central1-" + PROJECT_ID + ".cloudfunctions.net/createStripeCheckout";
+  const INVENTORY_FIRESTORE_URL =
+    "https://firestore.googleapis.com/v1/projects/" +
+    PROJECT_ID +
+    "/databases/(default)/documents/sos_inventory?pageSize=200";
 
   let cart = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  // Map of itemId -> stock number (only contains items that exist in sos_inventory)
+  let inventoryMap = new Map();
 
   function saveCart() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cart));
@@ -10,7 +18,63 @@
     syncProductButtons();
   }
 
-  // Smart combined shipping calculation matching the backend function
+  function getStockLimit(itemId, isUnique) {
+    if (inventoryMap.has(itemId)) {
+      return inventoryMap.get(itemId);
+    }
+    // Fingerboards default to 1; untracked shirts allow up to 10
+    return isUnique ? 1 : 10;
+  }
+
+  async function loadInventory() {
+    try {
+      const res = await fetch(INVENTORY_FIRESTORE_URL);
+      if (!res.ok) return;
+      const data = await res.json();
+      inventoryMap.clear();
+
+      if (Array.isArray(data.documents)) {
+        data.documents.forEach(function (doc) {
+          const parts = doc.name.split("/");
+          const docId = decodeURIComponent(parts[parts.length - 1]);
+          const fields = doc.fields || {};
+          const rawStock =
+            fields.stock &&
+            (fields.stock.integerValue !== undefined
+              ? fields.stock.integerValue
+              : fields.stock.doubleValue);
+          const stock = Number(rawStock);
+          if (docId && !isNaN(stock)) {
+            inventoryMap.set(docId, Math.max(0, Math.floor(stock)));
+          }
+        });
+      }
+
+      // Trim or remove items in localStorage cart that exceed live stock
+      let changed = false;
+      cart = cart.filter(function (item) {
+        const limit = getStockLimit(item.id, item.isUnique);
+        if (limit <= 0) {
+          changed = true;
+          return false;
+        }
+        if (item.quantity > limit) {
+          item.quantity = limit;
+          changed = true;
+        }
+        return true;
+      });
+      if (changed) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(cart));
+      }
+
+      syncProductButtons();
+      renderCartUI();
+    } catch (err) {
+      console.warn("Could not load live inventory:", err);
+    }
+  }
+
   function calculateShipping(cartItems) {
     let shirtCount = 0;
     let boardCount = 0;
@@ -25,12 +89,10 @@
 
     if (shirtCount === 0 && boardCount === 0) return 0;
 
-    // Fingerboards only: $2.50 base + $0.50 per additional board
     if (shirtCount === 0) {
       return 2.50 + Math.max(0, boardCount - 1) * 0.50;
     }
 
-    // T-Shirts present: $5.00 base + $1.50 per additional shirt (boards ride free)
     return 5.00 + Math.max(0, shirtCount - 1) * 1.50;
   }
 
@@ -44,7 +106,7 @@
       ".sos-cart-body { padding: 20px; overflow-y: auto; flex: 1; }",
       ".sos-cart-item { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #222; padding-bottom: 14px; margin-bottom: 14px; }",
       ".sos-cart-footer { padding: 20px; border-top: 1px solid #2a2a2a; background: #181818; }",
-      ".sos-size-select { display: block; margin: 0 auto 12px auto; padding: 6px 12px; border: 1px solid #ccc; background: #fff; color: #111; font-weight: bold; width: 140px; border-radius: 0; }",
+      ".sos-size-select { display: block; margin: 0 auto 12px auto; padding: 6px 12px; border: 1px solid #ccc; background: #fff; color: #111; font-weight: bold; width: 185px; border-radius: 0; }",
       ".sos-nav-cart-btn { background: #d9534f; color: #fff !important; padding: 8px 14px !important; margin-left: 10px; font-weight: bold; cursor: pointer; border-radius: 0; }",
       ".sos-nav-cart-btn:hover { background: #c9302c; }"
     ].join("\n");
@@ -54,7 +116,8 @@
     if (navList) {
       const li = document.createElement("li");
       li.className = "nav-item";
-      li.innerHTML = '<a class="nav-link sos-nav-cart-btn" id="sosOpenCartBtn">CART (<span id="sosCartCount">0</span>)</a>';
+      li.innerHTML =
+        '<a class="nav-link sos-nav-cart-btn" id="sosOpenCartBtn">CART (<span id="sosCartCount">0</span>)</a>';
       navList.appendChild(li);
       li.querySelector("#sosOpenCartBtn").addEventListener("click", function (e) {
         e.preventDefault();
@@ -118,9 +181,8 @@
   function wireProductCards() {
     const pageTitle = document.title.toLowerCase();
     const pageUrl = window.location.pathname.toLowerCase();
-    
-    // Only target merch/shop for sizes; testpage, fingerboards, index default to fingerboards (unique 1-of-1)
-    const isMerchShopPage = pageUrl.includes("shop.html") || pageUrl.endsWith("/shop") || pageTitle.includes("merch");
+
+    const isMerchShopPage = pageUrl.includes("shopii") || pageTitle.includes("merch");
     const buyButtons = document.querySelectorAll("#products a.btn-danger");
 
     buyButtons.forEach(function (btn, index) {
@@ -145,12 +207,13 @@
       });
 
       const imgSrc = imgEl ? new URL(imgEl.getAttribute("src"), window.location.href).href : "";
+      const baseId = baseTitle.replace(/\s+/g, "-").toLowerCase();
 
       let sizeSelect = null;
-      // ONLY inject size dropdowns if we are strictly on the Merch/Shop page
       if (isMerchShopPage) {
         sizeSelect = document.createElement("select");
         sizeSelect.className = "sos-size-select";
+        sizeSelect.dataset.baseId = baseId;
         ["M", "L", "XL"].forEach(function (sz) {
           const opt = document.createElement("option");
           opt.value = sz;
@@ -158,33 +221,39 @@
           if (sz === "L") opt.selected = true;
           sizeSelect.appendChild(opt);
         });
+        sizeSelect.addEventListener("change", syncProductButtons);
         btn.parentNode.insertBefore(sizeSelect, btn);
       }
 
       btn.removeAttribute("href");
       btn.style.cursor = "pointer";
-      btn.dataset.baseId = baseTitle.replace(/\s+/g, "-").toLowerCase();
-      // If we are on testpage or fingerboards, isUnique is true (no size select)
+      btn.dataset.baseId = baseId;
       btn.dataset.isUnique = (!isMerchShopPage).toString();
 
       btn.addEventListener("click", function (e) {
         e.preventDefault();
+        const isUnique = btn.dataset.isUnique === "true";
         const selectedSize = sizeSelect ? sizeSelect.value : "";
-        const itemId = sizeSelect
-          ? btn.dataset.baseId + "-" + selectedSize
-          : btn.dataset.baseId;
+        const itemId = sizeSelect ? baseId + "-" + selectedSize : baseId;
+        const stockLimit = getStockLimit(itemId, isUnique);
+
+        if (stockLimit <= 0) return;
 
         const existing = cart.find(function (item) {
           return item.id === itemId;
         });
 
-        if (!sizeSelect && existing) {
+        if (isUnique && existing) {
           toggleCart(true);
           return;
         }
 
         if (existing) {
-          existing.quantity += 1;
+          if (existing.quantity < stockLimit) {
+            existing.quantity += 1;
+          } else {
+            alert("Only " + stockLimit + " left in stock for this item.");
+          }
         } else {
           cart.push({
             id: itemId,
@@ -192,7 +261,7 @@
             size: selectedSize,
             price: price,
             quantity: 1,
-            isUnique: !isMerchShopPage,
+            isUnique: isUnique,
             image: imgSrc
           });
         }
@@ -206,21 +275,55 @@
   }
 
   function syncProductButtons() {
+    // Update size dropdown labels with live stock counts
+    const selects = document.querySelectorAll("#products select.sos-size-select");
+    selects.forEach(function (sel) {
+      const baseId = sel.dataset.baseId;
+      Array.from(sel.options).forEach(function (opt) {
+        const sz = opt.value;
+        const itemId = baseId + "-" + sz;
+        if (inventoryMap.has(itemId)) {
+          const stock = inventoryMap.get(itemId);
+          opt.textContent =
+            stock <= 0 ? "Size: " + sz + " (SOLD OUT)" : "Size: " + sz + " (" + stock + " left)";
+        } else {
+          opt.textContent = "Size: " + sz;
+        }
+      });
+    });
+
+    // Update ADD TO CART / IN CART / SOLD OUT buttons
     const buyButtons = document.querySelectorAll("#products a[data-base-id]");
     buyButtons.forEach(function (btn) {
       const isUnique = btn.dataset.isUnique === "true";
+      const baseId = btn.dataset.baseId;
+      const card = btn.closest(".col-lg-4, .col-lg-3, .col-md-6");
+      const sizeSelect = card ? card.querySelector("select.sos-size-select") : null;
+      const activeId = sizeSelect ? baseId + "-" + sizeSelect.value : baseId;
+
+      const stockLimit = getStockLimit(activeId, isUnique);
       const inCart = cart.some(function (item) {
-        return item.id === btn.dataset.baseId;
+        return item.id === activeId;
       });
 
-      if (isUnique && inCart) {
+      if (stockLimit <= 0) {
+        btn.textContent = "SOLD OUT";
+        btn.classList.remove("btn-danger", "btn-dark");
+        btn.classList.add("btn-secondary", "disabled");
+        btn.style.cursor = "not-allowed";
+        btn.style.opacity = "0.65";
+      } else if (isUnique && inCart) {
         btn.textContent = "IN CART ✓";
-        btn.classList.remove("btn-danger");
+        btn.classList.remove("btn-danger", "btn-secondary", "disabled");
         btn.classList.add("btn-dark");
+        btn.style.cursor = "pointer";
+        btn.style.opacity = "1";
       } else {
         btn.textContent = "ADD TO CART";
-        btn.classList.remove("btn-dark");
+        btn.classList.remove("btn-dark", "btn-secondary", "disabled");
         btn.classList.add("btn-danger");
+        btn.style.cursor = "pointer";
+        btn.style.opacity = "1";
       }
     });
   }
@@ -254,12 +357,17 @@
       const lineTotal = item.price * item.quantity;
       subtotal += lineTotal;
       const subLabel = item.size ? "Size: " + item.size : "Custom 5-Ply Deck";
+      const stockLimit = getStockLimit(item.id, item.isUnique);
+      const atMax = item.quantity >= stockLimit;
+
       const qtyControls = item.isUnique
         ? '<span style="color:#888; font-size:0.85em;">1-of-1 Deck</span>'
         : '<div style="display:inline-flex; align-items:center; gap:8px; margin-top:4px;">' +
             '<button onclick="window.__sosUpdateQty(' + idx + ', -1)" style="background:#222; border:1px solid #444; color:#fff; width:24px; height:24px; line-height:1;">-</button>' +
             '<span>' + item.quantity + '</span>' +
-            '<button onclick="window.__sosUpdateQty(' + idx + ', 1)" style="background:#222; border:1px solid #444; color:#fff; width:24px; height:24px; line-height:1;">+</button>' +
+            '<button onclick="window.__sosUpdateQty(' + idx + ', 1)" ' +
+              (atMax ? 'disabled style="background:#222; border:1px solid #333; color:#555; width:24px; height:24px; line-height:1; cursor:not-allowed;"' : 'style="background:#222; border:1px solid #444; color:#fff; width:24px; height:24px; line-height:1;"') +
+            '>+</button>' +
           '</div>';
 
       return (
@@ -283,8 +391,14 @@
 
   window.__sosUpdateQty = function (idx, delta) {
     if (!cart[idx]) return;
-    cart[idx].quantity += delta;
-    if (cart[idx].quantity <= 0) cart.splice(idx, 1);
+    const item = cart[idx];
+    const limit = getStockLimit(item.id, item.isUnique);
+    const nextQty = item.quantity + delta;
+    if (nextQty <= 0) {
+      cart.splice(idx, 1);
+    } else if (nextQty <= limit) {
+      item.quantity = nextQty;
+    }
     saveCart();
   };
 
@@ -320,6 +434,7 @@
       alert("Could not start checkout: " + err.message);
       btn.disabled = false;
       btn.textContent = "CHECKOUT WITH STRIPE";
+      loadInventory();
     }
   }
 
@@ -344,5 +459,6 @@
     wireProductCards();
     renderCartUI();
     checkUrlStatus();
+    loadInventory();
   });
 })();
